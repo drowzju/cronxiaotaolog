@@ -370,6 +370,47 @@ class WebDAVClient:
         except Exception:
             return False
 
+    def download_images_from_dir(self, remote_dir: str, local_dir: Path, logger: logging.Logger) -> List[str]:
+        """从远端目录下载所有图片到本地目录
+
+        Args:
+            remote_dir: 远端目录路径
+            local_dir: 本地目录路径
+            logger: 日志记录器
+
+        Returns:
+            下载的图片文件名列表
+        """
+        downloaded = []
+        image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg'}
+
+        try:
+            # 列出远端目录内容
+            files = self.list_directory(remote_dir)
+
+            for file_info in files:
+                if file_info.get('is_directory'):
+                    continue
+
+                name = file_info.get('name', '')
+                ext = Path(name).suffix.lower()
+
+                if ext in image_extensions:
+                    # 下载图片
+                    remote_path = f"{remote_dir}/{name}" if not remote_dir.endswith('/') else f"{remote_dir}{name}"
+                    content = self.download_file(remote_path)
+
+                    if content:
+                        local_path = local_dir / name
+                        local_path.write_bytes(content)
+                        downloaded.append(name)
+                        logger.info(f"  下载图片: {name} ({len(content)} 字节)")
+
+        except Exception as e:
+            logger.error(f"下载图片失败: {e}")
+
+        return downloaded
+
 
 # =============================================================================
 # AI 服务
@@ -670,6 +711,26 @@ class XiaotaoSync:
                 self.logger.error(f"上传失败: {upload_path}")
                 print(f"  上传失败")
                 return False
+
+        # 6. 从远端日志目录下载图片到本地
+        self.logger.info(f"[6/6] 下载远端日志目录图片")
+        print(f"\n[6/6] 下载远端日志目录图片...")
+
+        remote_finalnote_dir = get_finalnote_date_dir(self.webdav_config, date_str)
+        local_finalnote_dir = self.local_dir / "finalnotes" / date_str.replace('-', '')[:4] / date_str.replace('-', '')[0:6] / date_str.replace('-', '')
+
+        downloaded_images = self.webdav.download_images_from_dir(
+            remote_finalnote_dir,
+            local_finalnote_dir,
+            self.logger
+        )
+
+        if downloaded_images:
+            self.logger.info(f"  成功下载 {len(downloaded_images)} 张图片: {', '.join(downloaded_images)}")
+            print(f"  成功下载 {len(downloaded_images)} 张图片: {', '.join(downloaded_images)}")
+        else:
+            self.logger.info("  远端日志目录没有图片")
+            print("  远端日志目录没有图片")
 
         self.logger.info(f"{'='*60}")
         self.logger.info(f"处理完成: {date_str}")
