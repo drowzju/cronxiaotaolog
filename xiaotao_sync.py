@@ -17,6 +17,7 @@ import json
 import base64
 import argparse
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -97,10 +98,10 @@ class WebDAVConfig:
 
 @dataclass
 class AIConfig:
-    """AI 服务配置"""
+    """AI 服务配置（DeepSeek API，OpenAI 兼容）"""
     api_key: str
-    base_url: str = "https://coding.dashscope.aliyuncs.com/v1"
-    model: str = "kimi-k2.5"
+    base_url: str = "https://api.deepseek.com/v1"
+    model: str = "deepseek-v4-flash"
 
     @property
     def is_configured(self) -> bool:
@@ -417,7 +418,7 @@ class WebDAVClient:
 # =============================================================================
 
 class AIService:
-    """AI 服务 - 调用阿里云 Coding Plan API"""
+    """AI 服务 - 调用 DeepSeek API（OpenAI 兼容）"""
 
     # Markdown 输出模板
     MARKDOWN_TEMPLATE = '''# 随记
@@ -489,13 +490,13 @@ class AIService:
 输出结构必须严格为 Markdown：{MARKDOWN_TEMPLATE}
 
 {CLASSIFICATION_RULES}
-请保留原有日志中已经整理好的内容，把闪记内容合并到对应分类中。'''
+请保留原有日志中已经整理好的内容，不要动原来已有的归类结构，而是把闪记内容合并到对应分类中。'''
 
     def __init__(self, config: AIConfig):
         self.config = config
 
-    def _call_api(self, system_prompt: str, user_content: str) -> str:
-        """调用 AI API"""
+    def _call_api(self, system_prompt: str, user_content: str, max_retries: int = 3) -> str:
+        """调用 DeepSeek API，带指数退避重试"""
         if not self.config.is_configured:
             raise Exception("AI 服务未配置")
 
@@ -513,23 +514,42 @@ class AIService:
             'max_tokens': 4000
         }
 
-        try:
-            response = requests.post(
-                f"{self.config.base_url}/chat/completions",
-                headers=headers,
-                json=data,
-                timeout=60
-            )
-            response.raise_for_status()
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.post(
+                    f"{self.config.base_url}/chat/completions",
+                    headers=headers,
+                    json=data,
+                    timeout=120
+                )
 
-            result = response.json()
-            if 'choices' in result and len(result['choices']) > 0:
-                content = result['choices'][0]['message']['content']
-                return self._clean_markdown_output(content)
-            else:
-                raise Exception("API 响应格式错误")
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"API 请求失败: {e}")
+                # 429 (rate limit) 或 5xx 需要重试
+                if response.status_code in [429, 500, 502, 503, 504]:
+                    if attempt < max_retries:
+                        wait = 2 ** attempt  # 1s, 2s, 4s
+                        time.sleep(wait)
+                        continue
+                    else:
+                        raise Exception(f"API 请求失败（已重试 {max_retries} 次）: HTTP {response.status_code}, {response.text}")
+
+                response.raise_for_status()
+
+                result = response.json()
+                if 'choices' in result and len(result['choices']) > 0:
+                    content = result['choices'][0]['message']['content']
+                    return self._clean_markdown_output(content)
+                else:
+                    raise Exception("API 响应格式错误")
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                if attempt < max_retries:
+                    wait = 2 ** attempt
+                    time.sleep(wait)
+                else:
+                    raise Exception(f"API 请求失败（已重试 {max_retries} 次）: {e}")
+
+        raise Exception(f"API 请求失败（已重试 {max_retries} 次）: {last_error}")
 
     def _clean_markdown_output(self, content: str) -> str:
         """清理 markdown 输出，去除多余的代码块标记"""
@@ -828,11 +848,11 @@ def load_config(args) -> tuple:
         finalnote_dir=os.getenv('WEBDAV_FINALNOTE_DIR', '/All/Daily/')
     )
 
-    # AI 配置
+    # AI 配置（DeepSeek API）
     ai_config = AIConfig(
         api_key=os.getenv('AI_API_KEY', ''),
-        base_url=os.getenv('AI_BASE_URL', 'https://coding.dashscope.aliyuncs.com/v1'),
-        model=os.getenv('AI_MODEL', 'kimi-k2.5')
+        base_url=os.getenv('AI_BASE_URL', 'https://api.deepseek.com/v1'),
+        model=os.getenv('AI_MODEL', 'deepseek-v4-flash')
     )
 
     # 本地数据目录（优先级：环境变量 > 命令行参数 > 默认值）
@@ -880,9 +900,9 @@ def main():
   WEBDAV_PASSWORD     WebDAV 密码
   WEBDAV_FLASHNOTE_DIR 闪记目录 (默认: /flashnotes/)
   WEBDAV_FINALNOTE_DIR  日志目录 (默认: /All/Daily/)
-  AI_API_KEY          AI 服务 API Key
-  AI_BASE_URL         AI 服务基础 URL (默认: https://coding.dashscope.aliyuncs.com/v1)
-  AI_MODEL            AI 模型 (默认: kimi-k2.5)
+  AI_API_KEY          DeepSeek API Key
+  AI_BASE_URL         DeepSeek API 基础 URL (默认: https://api.deepseek.com/v1)
+  AI_MODEL            DeepSeek 模型 (默认: deepseek-v4-flash，推理可用 deepseek-v4-pro)
         '''
     )
 
