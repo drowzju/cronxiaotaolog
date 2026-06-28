@@ -634,13 +634,7 @@ class XiaotaoSync:
         flashnote_content = self._download_flashnote(flashnote_path)
         finalnote_content = self._download_finalnote(finalnote_path)
 
-        if not flashnote_content:
-            msg = f"没有找到闪记数据: {flashnote_path}"
-            self.logger.error(msg)
-            print(f"  {msg}")
-            return False
-
-        flashnote_info = f"✓ ({len(flashnote_content)} 字符)"
+        flashnote_info = f"✓ ({len(flashnote_content)} 字符)" if flashnote_content else "✗ (未找到)"
         finalnote_info = f"✓ ({len(finalnote_content)} 字符)" if finalnote_content else "✗ (0 字符)"
 
         self.logger.info(f"  闪记: {flashnote_info}")
@@ -653,9 +647,10 @@ class XiaotaoSync:
         self.logger.info(f"[2/5] 保存到本地")
         print(f"\n[2/5] 保存到本地...")
 
-        local_flashnote_path = self._save_flashnote_local(date_str, flashnote_content)
-        self.logger.info(f"  闪记保存到: {local_flashnote_path}")
-        print(f"  闪记保存到: {local_flashnote_path}")
+        if flashnote_content:
+            local_flashnote_path = self._save_flashnote_local(date_str, flashnote_content)
+            self.logger.info(f"  闪记保存到: {local_flashnote_path}")
+            print(f"  闪记保存到: {local_flashnote_path}")
 
         local_finalnote_path = None
         if finalnote_content:
@@ -663,79 +658,83 @@ class XiaotaoSync:
             self.logger.info(f"  日志保存到: {local_finalnote_path}")
             print(f"  日志保存到: {local_finalnote_path}")
 
-        # 3. AI 处理
-        self.logger.info(f"[3/5] AI 处理")
-        print(f"\n[3/5] AI 处理...")
+        if flashnote_content:
+            # 3. AI 处理
+            self.logger.info(f"[3/5] AI 处理")
+            print(f"\n[3/5] AI 处理...")
 
-        try:
-            if finalnote_content:
-                self.logger.info("  模式: 合并闪记到现有日志")
-                print("  模式: 合并闪记到现有日志")
-                result = self.ai.merge_flashnote_with_finalnote(flashnote_content, finalnote_content)
-            else:
-                self.logger.info("  模式: 闪记转换为日志")
-                print("  模式: 闪记转换为日志")
-                result = self.ai.convert_flashnote_to_markdown(flashnote_content)
-
-            self.logger.info(f"  处理完成: {len(result)} 字符")
-            print(f"  处理完成: {len(result)} 字符")
-        except Exception as e:
-            self.logger.error(f"AI 处理失败: {e}")
-            print(f"  AI 处理失败: {e}")
-            return False
-
-        # 4. 保存处理结果到本地
-        self.logger.info(f"[4/5] 保存处理结果到本地")
-        print(f"\n[4/5] 保存处理结果到本地...")
-
-        processed_path = self._save_processed_local(date_str, result)
-        self.logger.info(f"  保存到: {processed_path}")
-        print(f"  保存到: {processed_path}")
-
-        # 5. 上传回 WebDAV（如有现有日志，先备份）
-        self.logger.info(f"[5/5] 上传回 WebDAV")
-
-        if dry_run:
-            self.logger.info("模拟模式，跳过上传和备份")
-            self.logger.info(f"预览内容前 500 字符:\n{result[:500]}...")
-            print(f"\n[5/5] 模拟模式，跳过上传和备份")
-            print(f"  预览内容前 500 字符:")
-            print(f"  {result[:500]}...")
-        else:
-            print(f"\n[5/5] 上传回 WebDAV...")
-            upload_path = get_finalnote_file_path(self.webdav_config, date_str)
-            self.logger.info(f"  上传路径: {upload_path}")
-
-            # 5.1 如云端已有日志，先备份到 WebDAV
-            # 本地 finalnotes/ 下的原始文件已是备份，无需重复保存
-            if finalnote_content:
-                backup_path = get_flashnote_backup_file_path(self.webdav_config, date_str)
-                self.logger.info(f"  备份现有日志到: {backup_path}")
-                print(f"  备份现有日志到: {backup_path}")
-
-                backup_success = self.webdav.backup_file(upload_path, backup_path)
-                if backup_success:
-                    self.logger.info(f"  备份成功（本地备份: {local_finalnote_path}）")
-                    print(f"  备份成功（本地备份: {local_finalnote_path}）")
+            try:
+                if finalnote_content:
+                    self.logger.info("  模式: 合并闪记到现有日志")
+                    print("  模式: 合并闪记到现有日志")
+                    result = self.ai.merge_flashnote_with_finalnote(flashnote_content, finalnote_content)
                 else:
-                    self.logger.error("备份失败，跳过上传")
-                    print(f"  备份失败，跳过上传")
-                    return False
+                    self.logger.info("  模式: 闪记转换为日志")
+                    print("  模式: 闪记转换为日志")
+                    result = self.ai.convert_flashnote_to_markdown(flashnote_content)
 
-            # 5.2 上传新内容
-            upload_success = self.webdav.upload_file(upload_path, result.encode('utf-8'))
-            if upload_success:
-                self.logger.info(f"  上传成功: {upload_path}")
-                print(f"  上传成功: {upload_path}")
-
-                # 5.3 上传成功，用处理后的日志覆盖本地原日志
-                final_path = self._overwrite_finalnote_local(date_str, result)
-                self.logger.info(f"  本地日志已更新: {final_path}")
-                print(f"  本地日志已更新: {final_path}")
-            else:
-                self.logger.error(f"上传失败: {upload_path}")
-                print(f"  上传失败")
+                self.logger.info(f"  处理完成: {len(result)} 字符")
+                print(f"  处理完成: {len(result)} 字符")
+            except Exception as e:
+                self.logger.error(f"AI 处理失败: {e}")
+                print(f"  AI 处理失败: {e}")
                 return False
+
+            # 4. 保存处理结果到本地
+            self.logger.info(f"[4/5] 保存处理结果到本地")
+            print(f"\n[4/5] 保存处理结果到本地...")
+
+            processed_path = self._save_processed_local(date_str, result)
+            self.logger.info(f"  保存到: {processed_path}")
+            print(f"  保存到: {processed_path}")
+
+            # 5. 上传回 WebDAV（如有现有日志，先备份）
+            self.logger.info(f"[5/5] 上传回 WebDAV")
+
+            if dry_run:
+                self.logger.info("模拟模式，跳过上传和备份")
+                self.logger.info(f"预览内容前 500 字符:\n{result[:500]}...")
+                print(f"\n[5/5] 模拟模式，跳过上传和备份")
+                print(f"  预览内容前 500 字符:")
+                print(f"  {result[:500]}...")
+            else:
+                print(f"\n[5/5] 上传回 WebDAV...")
+                upload_path = get_finalnote_file_path(self.webdav_config, date_str)
+                self.logger.info(f"  上传路径: {upload_path}")
+
+                # 5.1 如云端已有日志，先备份到 WebDAV
+                # 本地 finalnotes/ 下的原始文件已是备份，无需重复保存
+                if finalnote_content:
+                    backup_path = get_flashnote_backup_file_path(self.webdav_config, date_str)
+                    self.logger.info(f"  备份现有日志到: {backup_path}")
+                    print(f"  备份现有日志到: {backup_path}")
+
+                    backup_success = self.webdav.backup_file(upload_path, backup_path)
+                    if backup_success:
+                        self.logger.info(f"  备份成功（本地备份: {local_finalnote_path}）")
+                        print(f"  备份成功（本地备份: {local_finalnote_path}）")
+                    else:
+                        self.logger.error("备份失败，跳过上传")
+                        print(f"  备份失败，跳过上传")
+                        return False
+
+                # 5.2 上传新内容
+                upload_success = self.webdav.upload_file(upload_path, result.encode('utf-8'))
+                if upload_success:
+                    self.logger.info(f"  上传成功: {upload_path}")
+                    print(f"  上传成功: {upload_path}")
+
+                    # 5.3 上传成功，用处理后的日志覆盖本地原日志
+                    final_path = self._overwrite_finalnote_local(date_str, result)
+                    self.logger.info(f"  本地日志已更新: {final_path}")
+                    print(f"  本地日志已更新: {final_path}")
+                else:
+                    self.logger.error(f"上传失败: {upload_path}")
+                    print(f"  上传失败")
+                    return False
+        else:
+            self.logger.info("无闪记数据，跳过 AI 处理和上传")
+            print("  无闪记数据，跳过 AI 处理和上传")
 
         # 6. 从远端日志目录下载图片到本地
         self.logger.info(f"[6/6] 下载远端日志目录图片")
